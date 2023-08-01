@@ -1,0 +1,865 @@
+---
+title: TypeChatをソースコードから理解する
+tags: typechat TypeScript OpenAI ChatGPT LLM
+author: hosaka_
+slide: false
+---
+# はじめに
+microsoftからリリースされた**TypeChat**。
+
+https://microsoft.github.io/TypeChat/
+
+ChatGPTを扱う上では、回答が所定のフォーマットになるようにコントロールすることが肝になります。それをTypeScriptの型システムで行おう、というのがTypeChatに底流するアイデアです。
+
+ソースをみたところ、行数も多くなく、自力で追える範囲だったので、各ファイルの内容を確認してみました。
+
+# TypeChatの大まかな流れ
+見通しを良くするために、最初に処理の流れを示しておきます。
+
+TypeChatはJSONをインターフェイスに次の流れで、`translate`を行います。
+
+```mermaid
+graph TD
+	subgraph TypeChatJsonTranslator.translate
+	    A[Natural Language] --complete--> B[Format in JSON]
+	    B --TypeChatJsonValidator--> C[Validate JSON]
+	end
+    C --not valid--> D[Repair]
+    D --repair complete--> C
+    C --valid--> F[Answer]
+```
+
+自然言語をJSONにするのは 関数のSchemaを与える**Function calling**や**Zapier Natural Language Actions**と類似していますが、変換した**JSONのチェックにTypeScriptの型チェックを用いる**点が、TypeChatの特色になります。
+
+---
+**Function calling**
+
+https://openai.com/blog/function-calling-and-other-api-updates
+
+**Zapier Natural Language Actions**
+
+https://zenn.dev/ptna/articles/cd0c10341713ae
+
+---
+
+# ソースコードを眺める
+https://github.com/microsoft/TypeChat/tree/main/src
+
+## ファイル構成
+TypeChatの本体は下記のファイルからなります。
+```
+- src
+  - index.ts
+  - interactive.ts
+  - model.ts
+  - program.ts
+  - result.ts
+  - tsconfig.json
+  - typechat.ts 
+  - validate.ts
+```
+
+tsconfig.jsonはのぞいて、これを愚直に上から見ていきます。
+
+
+## index.ts
+https://github.com/microsoft/TypeChat/blob/b380488c807f6676e88ccf3e9469b4e8f1b170b0/src/index.ts#L1-L6
+
+これは文字通りの「index」で、特記することはありません。
+
+ライブラリのエントリーポイントが単一になり、たとえば、
+
+```ts
+import { createLanguageModel, createJsonTranslator, processRequests } from "typechat";
+```
+
+のように`from "typechat"`でまとめてインポートできるようになります。
+
+## interactive.ts
+https://github.com/microsoft/TypeChat/blob/b380488c807f6676e88ccf3e9469b4e8f1b170b0/src/interactive.ts
+
+```ts
+export async function processRequests(interactivePrompt: string, inputFileName: string | undefined, processRequest: (request: string) => Promise<void>)
+```
+
+これもTypeChatの本質に関係のないファイルで、ファイル名が引数に与えられている場合はそのファイルを、そうでない場合は、ユーザーからの入力を求め、入力の各行に対してcallback処理を行う関数を定義しています。
+
+callbackにはTypeChatの処理が入ります。
+
+
+### 使用例
+```ts
+// Process requests interactively or from the input file specified on the command line
+processRequests("😀> ", process.argv[2], async (request) => {
+    const response = await translator.translate(request);
+    if (!response.success) {
+        console.log(response.message);
+        return;
+    }
+    console.log(`The sentiment is ${response.data.sentiment}`);
+});
+```
+https://github.com/microsoft/TypeChat/blob/b380488c807f6676e88ccf3e9469b4e8f1b170b0/examples/sentiment/src/main.ts#L14-L22
+
+
+## model.ts
+OpenAIとAzure OpenAIのencapsulation（カプセル化）である`TypeChatLanguageModel`を作成する関数群。
+
+- createLanguageModel
+  - createOpenAILanguageModel / createAzureOpenAILanguageModel
+    - createAxiosLanguageModel
+      - complete(prompt: string)
+
+
+**TypeChatLanguageModel**
+```ts
+export interface TypeChatLanguageModel {
+    retryMaxAttempts?: number;
+    retryPauseMs?: number;
+    complete(prompt: string): Promise<Result<string>>;
+}
+```
+https://github.com/microsoft/TypeChat/blob/b380488c807f6676e88ccf3e9469b4e8f1b170b0/src/model.ts#L10C1-L25C1
+
+**OPENAI_API_KEY**と**OPENAI_MODEL**が`.env`にセットされている場合は、OpenAIを、**AZURE_OPENAI_API_KEY**がセットされている場合は、Azure OpenAI Serviceを用います。
+
+APIリクエストは`complete`メソッドで行われます。
+
+```ts
+complete(prompt: string): Promise<Result<string>>;
+```
+
+### 使用例
+`createJsonTranslator`の引数として用います。
+```ts
+const model = createLanguageModel(process.env);
+const translator = createJsonTranslator<SentimentResponse>(model, schema, "SentimentResponse");
+```
+
+https://github.com/microsoft/TypeChat/blob/b380488c807f6676e88ccf3e9469b4e8f1b170b0/examples/sentiment/src/main.ts#L12
+
+## program.ts
+これは最後に説明した方がわかりやすいので、後回しにします。
+
+## result.ts
+実行結果への型付け。エラーハンドリング用。
+
+- Success/ErrorとそのユニオンのResult型を定義
+```ts
+export type Success<T> = { success: true, data: T };
+export type Error = { success: false, message: string };
+export type Result<T> = Success<T> | Error;
+```
+
+- getData関数: Successの場合はデータを、Errorの場合はErrorを投げる。
+
+https://github.com/microsoft/TypeChat/blob/e300dccd2fbf846518dba7fe94a36a30168885ec/src/result.ts
+
+### 使用例
+```ts
+    console.log(getData(translator.validator.createModuleTextFromJson(program)));
+```
+https://github.com/microsoft/TypeChat/blob/b380488c807f6676e88ccf3e9469b4e8f1b170b0/examples/math/src/main.ts#L21
+
+## typechat.ts
+全体のメインのファイル。冒頭のダイアグラムでも示した**TypeChatJsonTranslator**を定義します。
+
+```typechat.ts
+export interface TypeChatJsonTranslator<T extends object> {
+    model: TypeChatLanguageModel;
+    validator: TypeChatJsonValidator<T>;
+    attemptRepair:  boolean;
+    stripNulls:  boolean;
+    createRequestPrompt(request: string): string;
+    createRepairPrompt(validationError: string): string;
+    translate(request: string): Promise<Result<T>>;
+}
+```
+
+**TypeChatJsonTranslator**は、`translate`メソッドにより、
+
+- 自然言語のリクエストをJSONに変換
+- 回答がJSONかどうかチェック
+- **TypeChatJsonValidator**によるJSONの型チェック
+- エラーがあった場合は修正（repair)
+
+を行っています。
+
+### 1. 自然言語のリクエストをJSONに変換
+LLM（OpenAI）を用いて変換しています。プロンプトは`createRequestPrompt`で定義されています。
+
+わかりやすいように変数に定数を入れて掲示します。
+
+```txt
+You are a service that translates user requests into JSON objects of type "SentimentResponse" according to the following TypeScript definitions:
+
+    ```
+    // The following is a schema definition for determining the sentiment of a some user input.
+    interface SentimentResponse {
+      sentiment: "negative" | "neutral" | "positive";  // The sentiment of the text
+    }
+    ```
+
+    The following is a user request:
+    ```
+    TypeChat is awesome!
+    ```
+            
+The following is the user request translated into a JSON object with 2 spaces of indentation and no properties with the value undefined:
+
+```
+
+*The following is...* で始まる最後一文は、LLMを誘導する、いわゆる**leading words**になると思います。
+
+これをプロンプトにして、**TypeChatLanguageModel**の`complete`を実行します。
+
+### 2. 回答がJSONかどうかチェック
+`{}`を見て、JSON形式かどうかを見て、JSON文字列を抽出。
+```ts
+    const startIndex = responseText.indexOf("{");
+    const endIndex = responseText.lastIndexOf("}");
+    if (!(startIndex >= 0 && endIndex > startIndex)) {
+        return error(`Response is not JSON:\n${responseText}`);
+    }
+    const jsonText = responseText.slice(startIndex, endIndex + 1);
+```
+
+### 3. **TypeChatJsonValidator**によるJSONの型チェック
+```ts
+    const validation = validator.validate(jsonText);
+```
+TypeChatの核心ですが、ここの処理は次項で見ていきます。
+
+### 4. エラーがあった場合は修正（repair)
+エラーがあった場合は、下記のようなプロンプトを`createRepairPrompt`で作成し、再びLLMへリクエストします。
+
+```
+${responseText}
+
+The JSON object is invalid for the following reason:
+
+"""
+${validationError}
+"""
+
+The following is a revised JSON object:
+```
+
+## validate.ts
+TypeChatを特徴づける、JSONと型Schemaの照合を行う**TypeChatJsonValidator**を定義しています。
+
+```validate.ts
+export interface TypeChatJsonValidator<T extends object> {
+    schema: string;
+    typeName: string;
+    stripNulls:  boolean;
+    createModuleTextFromJson(jsonObject: object): Result<string>;
+    validate(jsonText: string): Result<T>;
+}
+```
+https://github.com/microsoft/TypeChat/blob/b380488c807f6676e88ccf3e9469b4e8f1b170b0/src/validate.ts#L17C1-L48
+
+このうち、**validate**が面白いことをやっています。
+
+
+### validate
+```ts
+    function validate(jsonText: string)
+```
+
+https://github.com/microsoft/TypeChat/blob/e300dccd2fbf846518dba7fe94a36a30168885ec/src/validate.ts#L75C1-L98
+
+引数にはLLMから返ってきたJSON（?）の文字列を取ります。
+
+何をvalidateしているか順々に見ていきます。
+
+#### 1. parseできるか
+まずparseできるJSONかどうか。普通にtry...catch。
+
+```validate.ts
+        try {
+            jsonObject = JSON.parse(jsonText) as object;
+        }
+        catch (e) {
+            return error(e instanceof SyntaxError ? e.message : "JSON parse error");
+        }
+```
+
+#### 2. Nullチェック（optional)
+`stripNulls`がtrueになっている場合は、値がnullのプロパティを削除。
+
+```validate.ts
+        if (validator.stripNulls) {
+            stripNulls(jsonObject);
+        }
+```
+
+
+#### 3. createModuleTextFromJson：型Schemaのインポート文作成
+ここからがTypeChatの要点です。型をチェックするためにTypeScriptを作成、つまりメタプログラミングを行います。
+
+引数で与えられる`typeName`から、TypeScriptのインポート文を作ります。
+
+```validate.ts
+import { ${typeName} } from './schema';\nconst json: ${typeName} = ${JSON.stringify(jsonObject, undefined, 2)}
+```
+
+たとえば、`SentimentResponse`がtypeNameとして与えられると、以下のようなTypeScriptのプログラム文を返します。
+
+```ts
+import { SentimentResponse } from './schema';
+const json: SentimentResponse = {
+  "sentiment": "neutral"
+};
+```
+
+#### 4. createProgramFromModuleText:TypeScriptのプログラム文を作る
+同様にして、引数のschemaを使って、モジュールから型チェック用のTypeScriptのプログラムを作ります。
+
+**createProgramFromModuleText**は、たとえば以下のプログラムを作ります。
+
+```sample.ts
+interface Array<T> { length: number, [n: number]: T }
+interface Object { toString(): string }
+interface Function { prototype: unknown }
+interface CallableFunction extends Function {}
+interface NewableFunction extends Function {}
+interface String { readonly length: number }
+interface Boolean { valueOf(): boolean }
+interface Number { valueOf(): number }
+interface RegExp { test(string: string): boolean }
+
+// The following is a schema definition for determining the sentiment of a some user input.
+interface SentimentResponse {
+  sentiment: "negative" | "neutral" | "positive";  // The sentiment of the text
+}
+
+const json: SentimentResponse = {
+  "sentiment": "neutral"
+};
+```
+
+#### 5. TypeScriptをcompileして型チェックを行う
+```validate.ts
+        const syntacticDiagnostics = program.getSyntacticDiagnostics();
+        const programDiagnostics = syntacticDiagnostics.length ? syntacticDiagnostics : program.getSemanticDiagnostics();
+        if (programDiagnostics.length) {
+            const diagnostics = programDiagnostics.map(d => typeof d.messageText === "string" ? d.messageText : d.messageText.messageText).join("\n");
+            return error(diagnostics);
+        }
+```
+
+作成したTypeScriptに以下の二つのチェックをかけます。
+
+- getSyntacticDiagnostics：シンタックスエラーのチェック
+- getSemanticDiagnostics：意味解析
+
+もしも型が異なったJSONが定義されているとコンパイルエラーが出て、JSONの型チェックができる、という仕組みです。
+
+**参考記事**
+＊2013年の古い記事です。
+
+https://qiita.com/JunSuzukiJapan/items/708bc21fca88f6ee6f8b
+
+### program.ts　
+最後に後回しにした**program.ts**を見てみます。
+
+https://github.com/microsoft/TypeChat/blob/e300dccd2fbf846518dba7fe94a36a30168885ec/src/program.ts
+
+このファイルのメインの関数は`createProgramTranslator`で、関数実行できるようなSchemaとプロンプトを与えた特殊な`TypeChatJsonTranslator`を作るのが主な役割です。要するにChatGPTのFunction calling的なことを行っています。
+
+#### createProgramTranslator
+
+```ts
+export function createProgramTranslator(model: TypeChatLanguageModel, schema: string): TypeChatJsonTranslator<Program> {
+
+    const translator = createJsonTranslator<Program>(model, schema, "Program");
+    ...
+```
+
+このschemaと**Program**型が特殊です。
+
+##### Schema
+実行する関数シグネチャを定義します。Schemaは"API"という名前の型である必要があります。
+
+たとえば、*math*のサンプルは下記。
+
+```mathSchema.ts
+export type API = {
+    // Add two numbers
+    add(x: number, y: number): number;
+    // Subtract two numbers
+    sub(x: number, y: number): number;
+    // Multiply two numbers
+    mul(x: number, y: number): number;
+    // Divide two numbers
+    div(x: number, y: number): number;
+    // Negate a number
+    neg(x: number): number;
+    // Identity function
+    id(x: number): number;
+    // Unknown request
+    unknown(text: string): number;
+}
+```
+
+https://github.com/microsoft/TypeChat/blob/b380488c807f6676e88ccf3e9469b4e8f1b170b0/examples/math/src/mathSchema.ts#L5
+
+##### Program型
+LLMの返り値をparseして実行するための型。
+
+ソースからコメントを一部省くと、次のようになっています。
+
+```program.ts
+export type Program = {
+    "@steps": FunctionCall[];
+}
+
+export type FunctionCall = {
+    // Name of the function
+    "@func": string;
+    // Arguments for the function, if any
+    "@args"?: Expression[];
+};
+
+export type Expression = JsonValue | FunctionCall | ResultReference;
+export type JsonValue = string | number | boolean | null | { [x: string]: Expression } | Expression[];
+export type ResultReference = {
+    // Index of the previous expression in the "@steps" array
+    "@ref": number;
+};
+```
+
+https://github.com/microsoft/TypeChat/blob/b380488c807f6676e88ccf3e9469b4e8f1b170b0/src/program.ts#L36-L68
+
+たとえば、先ほどのSchemaと
+
+>multiply two by three, then multiply four by five, then sum the results
+
+を入力した場合、次のようなProgram型のJSONが返ってくることが期待されます。
+```ts
+[ 
+    {
+        @func: 'mul', @args: [2,3]
+    },
+    {
+        @func: 'mul', @args: [4,5]
+    },
+    {
+        @func: 'add', @args: [ { @ref: 0 }, { @ref: 1 } ]
+    }
+]
+```
+
+##### プロンプト
+関数呼び出しに関する点が加えられ、少しチューニングされています。
+
+```
+The programs can call functions from the API defined in the following TypeScript definitions: 
+    ```
+    ${translator.validator.schema}
+    ``` 
+```
+
+#### createModuleTextFromProgram
+型チェックを行う前に、`createModuleTextFromJson`を使って、JSONデータをTypeScriptにしますが、それを**Program**型用にチューニングしたのが、`createModuleTextFromProgram`です。
+
+たとえば、先ほどの例の
+
+```ts
+[ 
+    {
+        @func: 'mul', @args: [2,3]
+    },
+    {
+        @func: 'mul', @args: [4,5]
+    },
+    {
+        @func: 'add', @args: [ { @ref: 0 }, { @ref: 1 } ]
+    }
+]
+```
+
+は、
+
+```ts
+import { API } from "./schema";
+function program(api: API) {
+  const step1 = api.mul(2, 3);
+  const step2 = api.mul(4, 5);
+  return api.add(step1, step2);
+}
+```
+
+にparseされ、TypeScriptの型チェックが行われます。
+
+Schemaの型の名前を`API`としなければならないのは、下記で指定しているためでした。
+
+https://github.com/microsoft/TypeChat/blob/b380488c807f6676e88ccf3e9469b4e8f1b170b0/src/program.ts#L99
+
+#### evaluateJsonProgram
+コードの実行は、
+
+```ts
+    const result = await evaluateJsonProgram(program, handleCall);
+```
+のように`evaluateJsonProgram`で行います。
+
+第一引数には**Program**型のオブジェクトが入り、handleCallに関数名と関数の引数が渡るので、実際の処理を書きます。Function Callingと同じです。
+
+これまでの`math`の例だと、handleCallは次のような実装になっていました。
+
+```ts
+async function handleCall(func: string, args: any[]): Promise<unknown> {
+    console.log(`${func}(${args.map(arg => typeof arg === "number" ? arg : JSON.stringify(arg, undefined, 2)).join(", ")})`);
+    switch (func) {
+        case "add":
+            return args[0] + args[1];
+        case "sub":
+            return args[0] - args[1];
+        case "mul":
+            return args[0] * args[1];
+        case "div":
+            return args[0] / args[1];
+        case "neg":
+            return -args[0];
+        case "id":
+            return args[0];
+    }
+    return NaN;
+}
+```
+
+https://github.com/microsoft/TypeChat/blob/b380488c807f6676e88ccf3e9469b4e8f1b170b0/examples/math/src/main.ts#L27-L44
+
+関数名でswitchして関数実装を返すだけですね。
+
+---- 
+
+## サンプルファイルを見てみる
+振り返りも兼ね、サンプルファイルのうちから、`sentiment.ts`を実行してみます。
+
+```ts
+import fs from "fs";
+import path from "path";
+import dotenv from "dotenv";
+import { createLanguageModel, createJsonTranslator, processRequests } from "typechat";
+import { SentimentResponse } from "./sentimentSchema";
+
+// TODO: use local .env file.
+dotenv.config({ path: path.join(__dirname, "../../../.env") });
+
+const model = createLanguageModel(process.env);
+const schema = fs.readFileSync(path.join(__dirname, "sentimentSchema.ts"), "utf8");
+const translator = createJsonTranslator<SentimentResponse>(model, schema, "SentimentResponse");
+
+// Process requests interactively or from the input file specified on the command line
+processRequests("😀> ", process.argv[2], async (request) => {
+    const response = await translator.translate(request);
+    if (!response.success) {
+        console.log(response.message);
+        return;
+    }
+    console.log(`The sentiment is ${response.data.sentiment}`);
+});
+```
+https://github.com/microsoft/TypeChat/blob/b380488c807f6676e88ccf3e9469b4e8f1b170b0/examples/sentiment/src/main.ts
+
+### 1. TypeChatJsonTranslatorの作成
+```ts
+dotenv.config({ path: path.join(__dirname, "../../../.env") });
+
+const model = createLanguageModel(process.env);
+const schema = fs.readFileSync(path.join(__dirname, "sentimentSchema.ts"), "utf8");
+const translator = createJsonTranslator<SentimentResponse>(model, schema, "SentimentResponse");
+```
+
+上に見た通り、model, schema（型定義）を引数に渡して、TypeChatJsonTranslatorを作ります。
+
+### 2. 入力
+標準入力から値を受け取り、`translate`を実行します。
+```ts
+processRequests("😀> ", process.argv[2], async (request) => {
+    const response = await translator.translate(request);
+    ...
+}
+```
+
+### 3. translateの実行
+本処理です。
+
+#### createRequestPrompt
+LLMに与えられるプロンプトは下記です。
+```
+You are a service that translates user requests into JSON objects of type "SentimentResponse" according to the following TypeScript definitions:
+
+    ```
+    // The following is a schema definition for determining the sentiment of a some user input.
+    
+    export interface SentimentResponse {    
+    sentiment: "negative" | "neutral" | "positive";  
+    // The sentiment of the text
+    }
+    ```
+
+The following is a user request:"""`こんにちは！"""
+
+The following is the user request translated into a JSON object with 2 spaces of indentation and no properties with the value undefined:
+```
+
+#### complete
+completeの結果は下記となりました。
+```ts
+'{\n  "sentiment": "neutral"\n}'
+```
+
+#### validate
+##### JSONかどうかチェック
+問題なく通過しました。
+![](https://storage.googleapis.com/zenn-user-upload/ef355bdd6f26-20230801.png)
+
+##### 型チェック
+`validator.createModuleTextFromJson`で次のようなプログラムができます。
+
+```ts
+import { SentimentResponse } from './schema';
+const json: SentimentResponse = {
+  "sentiment": "neutral"
+};
+```
+
+これで型チェックを通過し、結果が表示されます。
+
+```sh
+😀> こんにちは!
+The sentiment is neutral
+```
+
+--- 
+
+### programの場合
+本文でも触れていますが、関数実行を伴う`math.ts`の処理を見てみます。
+
+```examples/math/src/main.ts
+import fs from "fs";
+import path from "path";
+import dotenv from "dotenv";
+import { createLanguageModel, processRequests, createProgramTranslator, evaluateJsonProgram, getData } from "typechat";
+
+// TODO: use local .env file.
+dotenv.config({ path: path.join(__dirname, "../../../.env") });
+
+const model = createLanguageModel(process.env);
+const schema = fs.readFileSync(path.join(__dirname, "mathSchema.ts"), "utf8");
+const translator = createProgramTranslator(model, schema);
+
+// Process requests interactively or from the input file specified on the command line
+processRequests("➕➖✖️➗🟰> ", process.argv[2], async (request) => {
+    const response = await translator.translate(request);
+    if (!response.success) {
+        console.log(response.message);
+        return;
+    }
+    const program = response.data;
+    console.log(getData(translator.validator.createModuleTextFromJson(program)));
+    console.log("Running program:");
+    const result = await evaluateJsonProgram(program, handleCall);
+    console.log(`Result: ${typeof result === "number" ? result : "Error"}`);
+});
+
+async function handleCall(func: string, args: any[]): Promise<unknown> {
+    console.log(`${func}(${args.map(arg => typeof arg === "number" ? arg : JSON.stringify(arg, undefined, 2)).join(", ")})`);
+    switch (func) {
+        case "add":
+            return args[0] + args[1];
+        case "sub":
+            return args[0] - args[1];
+        case "mul":
+            return args[0] * args[1];
+        case "div":
+            return args[0] / args[1];
+        case "neg":
+            return -args[0];
+        case "id":
+            return args[0];
+    }
+    return NaN;
+}
+```
+https://github.com/microsoft/TypeChat/blob/b380488c807f6676e88ccf3e9469b4e8f1b170b0/examples/math/src/main.ts#L1
+
+#### 1. TypeChatJsonTranslatorの作成
+前の例と大同小異ですが、**createProgramTranslator**を使っている点が異なります。
+
+**createProgramTranslator**によって、**Program**型に沿った処理を行右ことができます。
+
+```ts
+dotenv.config({ path: path.join(__dirname, "../../../.env") });
+
+const model = createLanguageModel(process.env);
+const schema = fs.readFileSync(path.join(__dirname, "mathSchema.ts"), "utf8");
+const translator = createProgramTranslator(model, schema);
+```
+
+引数のschemaも**API**という型名での関数シグネチャになっています。
+
+```mathSchema.ts
+export type API = {
+    // Add two numbers
+    add(x: number, y: number): number;
+    // Subtract two numbers
+    sub(x: number, y: number): number;
+    // Multiply two numbers
+    mul(x: number, y: number): number;
+    // Divide two numbers
+    div(x: number, y: number): number;
+    // Negate a number
+    neg(x: number): number;
+    // Identity function
+    id(x: number): number;
+    // Unknown request
+    unknown(text: string): number;
+}
+
+```
+
+#### 2. 入力
+前の例と同様に、入力をcallback関数に流します。
+
+下記を入力しました。
+
+>multiply two by three, then multiply four by five, then sum the results
+
+#### 3. translateの実行
+##### プロンプト
+**createProgramTranslator**を使っているのでLLMへのプロンプトは以下のようになります。（人間が読みやすいように手を入れています。）
+
+```txt
+You are a service that translates user requests into programs represented as JSON using the following TypeScript definitions:
+    
+    ```
+    // A program consists of a sequence of function calls that are evaluated in order.
+    
+    export type Program = {
+        "@steps": FunctionCall[];
+    }
+    
+    // A function call specifies a function name and a list of argument expressions. Arguments may contain// nested function calls and result references.
+    export type FunctionCall = {
+        // Name of the function
+        "@func": string;
+        // Arguments for the function, if any
+        "@args"?: Expression[];
+    };
+
+    // An expression is a JSON value, a function call, or a reference to the result of a preceding expression.
+    export type Expression = JsonValue | FunctionCall | ResultReference;
+
+    // A JSON value is a string, a number, a boolean, null, an object, or an array. Function calls and result// references can be nested in objects and arrays.
+    export type JsonValue = string | number | boolean | null | { [x: string]: Expression } | Expression[];
+
+    // A result reference represents the value of an expression from a preceding step.
+    export type ResultReference = {
+        // Index of the previous expression in the "@steps" array
+        "@ref": number;};
+
+    ```
+
+The programs can call functions from the API defined in the following TypeScript definitions:
+
+    ```
+    // This is a schema for writing programs that evaluate expressions.export type API = {
+        // Add two numbers
+        add(x: number, y: number): number;
+        // Subtract two numbers
+        sub(x: number, y: number): number;
+        // Multiply two numbers
+        mul(x: number, y: number): number;
+        // Divide two numbers
+        div(x: number, y: number): number;
+        // Negate a number
+        neg(x: number): number;
+        // Identity function
+        id(x: number): number;
+        // Unknown request
+        unknown(text: string): number;}
+    ```
+
+The following is a user request:
+
+"""multiply two by three, then multiply four by five, then sum the results"""
+
+The following is the user request translated into a JSON program object with 2 spaces of indentation and no properties with the value undefined:
+```
+
+
+#### OpenAIの回答
+上記プロンプトに対して以下のような回答が返ってきました。
+
+**Program**型に沿って、`@func`や`@args`、`@ref`が入っています。
+
+```json
+{
+  "@steps": [
+    {
+      "@func": "mul",
+      "@args": [2,3]
+    },
+    {
+      "@func": "mul",
+      "@args": [4,5]
+    },
+    {
+     "@func": "add",
+     "@args": [{ "@ref": 0 },{ "@ref": 1 }
+      ]
+    }
+  ]
+}
+```
+
+#### validate
+`Program`型からTypeScriptのプログラムを作り、コンパイルします。
+
+コンパイルすると、下記のようなコードとなります。
+```ts
+import { API } from "./schema";
+function program(api: API) {
+  const step1 = api.mul(2, 3);
+  const step2 = api.mul(4, 5);
+  return api.add(step1, step2);
+}
+```
+
+#### 実行（evaluateJsonProgram）
+型チェックが通ったら、最後に実行です。
+
+Programオブジェクトから関数名と引数を取り出し、`handleCall`に渡します。
+
+```ts
+async function handleCall(func: string, args: any[]): Promise<unknown>
+```
+引数に与えられた関数名と引数はコンソールで確認できます。
+
+```sh
+mul(2, 3)
+mul(4, 5)
+add(6, 20)
+Result: 26
+```
+
+となって、Schemaで定義した関数が正しいシグネチャで呼ばれていることが確認できました。
+
+# おわりに
+TypeChatの仕組みについて、ソースコードを一通り見てみました。
+
+ポイントは`validate.ts`でのTypeScriptの作成〜JSONの型チェックで、メタプログラミングになっているのが面白いです。
+
+**Program**型による関数実行はChatGPTのFunction Callingと大まかな仕組みは同じで、いかに正しく関数名と引数を手に入れるか、というところで、TypeScriptの型システムを使うか、JSONスキーマを使うか、の違い、と理解しました。
+
+Function callingでも想定外のJSONが返ってきてエラーになることがあったので、より堅牢なLLMアプリケーションのためにTypeChatは一つの面白いアプローチだと感じました。
+
+
+## 参考記事
+
+https://note.com/schroneko/n/n7065a1faed36
