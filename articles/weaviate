@@ -1,0 +1,641 @@
+---
+title: ベクトルデータベース Weaviate入門 〜セットアップからハイブリッド検索まで〜（TypeScript版）
+tags: LLM TypeScript Database データサイエンス OpenAI
+author: hosaka_
+slide: false
+---
+## はじめに
+ベクトルデータベース、触っていますか？
+
+GPTを筆頭とするLLMの浸透とともに、データベースの世界で存在感を増しているのが、「**ベクトルデータベース**」。AIの根幹にある**埋め込み（Embedding)** によって生成したベクトル値を扱うのに特化したデータベースです。
+
+Googleトレンドで"vector database"を見てみると、Chat GPTを追うようにスパイクしているのがわかります。
+![image.png](https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/2722903/8d85809f-5dbf-7db4-efbc-314814d549bd.png)
+出典：[Googleトレンド](https://trends.google.co.jp/trends/)
+
+私もOpenAIのEmbeddings APIを使ってデータをベクトル化して保存したり、LangChainの[Vectorstore Agent](https://python.langchain.com/docs/modules/agents/toolkits/vectorstore)でお問い合わせbotを作ってみたり、自前で作った[ChatGPT Retrieval Plugin](https://github.com/openai/chatgpt-retrieval-plugin)と接続させてみたりと、Chat GPTをきっかけにベクトルデータベースで遊ぶようになりました。
+
+これまでベクトルデータベースとして[Pinecone](https://www.pinecone.io/)を使っていましたが、そろそろ新しいベクトルデータベースにも触れてみようと思い立ち、[Weaviate](https://weaviate.io/)を試してみました。
+
+https://weaviate.io/
+
+本記事はその記録です。同じく新しいベクトルデータベースに触ってみようと思っている方の参考になればと、Weaviateの導入からデータ挿入、ハイブリット検索するまでを紹介します。
+
+## 本記事の要旨
+### Weaviateの導入
+- 試してみるなら、クラウドマネージド版Weaviateの無料プラン（sandbox)が簡単。
+- 接続はURLとAPIキー。
+
+### データの取り込み
+- Weaviateはデータ構造を定めたSchemaから作成する**Class**を持つ。
+- データはJSON形式で用意。事前にベクトル化する必要はなく、**Vectorizer**という内部モジュールでベクトル化して取り込める。
+
+### ハイブリッド検索
+- Weaviateにおけるハイブリッド検索とは、Sparse/Dense（粗密）、2つのベクトルを組み合わせて検索すること。キーワード検索とセマンティック検索（意味検索）の掛け合わせることができる。
+- ハイブリッド検索を有効にするには、クエリにパラメータを加えるだけ。事前にベクトル化する必要はない。
+  - TypeScriptのClientライブラリではGraphQLクエリに`withHybrid`を追加する。
+- パラメータの`alpha`を調整することで、 Sparse/Denseの重みづけができる。
+
+## 環境・必要なもの
+- Node.js
+  - v18.16.1
+- TypeScript
+  - [公式のクライアントライブラリ](https://github.com/weaviate/typescript-client)を使用。 
+- [Weaviate Cloud Services（WCS）](https://weaviate.io/developers/wcs)
+  - Weaviateのクラウドマネージド版
+  - 無料の*sandboxes*を使用
+  - データの保持期間は14日
+- OpenAI API
+  - APIキーを使用します。
+
+## Weaviateについて
+Weaviateを俯瞰する日本語の情報として、先行記事が二つあります。（Python、ローカル）本記事もこれらに負って（追って）いる点、最初におことわりしておきます。
+
+- [ベクトルデータベースWeaviateの概念を整理する](https://dev.classmethod.jp/articles/weaviate-overview/)
+- [ベクトルデータベースWeaviateのモジュールを試してみる](https://dev.classmethod.jp/articles/try-weaviate-modules/)
+
+Weaviateの概観は、屋上屋を架しても詮ないので、公式ドキュメントの**Weaviate in a nutshell**の意訳を上記記事から引用します。
+
+https://weaviate.io/developers/weaviate
+
+>- オープンソースです。
+>- データオブジェクトをベクターでインデックス化することで、そのセマンティックな特性に基づいて保存・取得することができます。
+>- スタンドアローン（純粋なベクトルデータベース）としても使えますし、コア機能を拡張する様々なモジュールと一緒に使うことでベクトル化を代替したりできます。
+>- GraphQL APIがあり、データに簡単にアクセスすることができます。
+>- 高速です（オープンソースのベンチマーク） 
+
+（引用元：[ベクトルデータベースWeaviateの概念を整理する](https://dev.classmethod.jp/articles/weaviate-overview/)）
+
+Weaviateは[LangChainとの接続](https://python.langchain.com/docs/modules/data_connection/vectorstores/integrations/weaviate)が用意されており、[ChatGPT Retrieval Plugin](https://github.com/openai/chatgpt-retrieval-plugin/tree/main/datastore/providers)でも、Pineconeの次に挙げられており、かなり主流のベクトルデータベースと言えそうです。
+
+ChatGPT Retrieval PluginのREADMEでは次のように紹介されていました。
+
+>Weaviateは、膨大なデータオブジェクトをシームレスにスケールアップするために設計されたオープンソースのベクトル検索エンジンです。ハイブリッド検索を初めからサポートしており、効率的なキーワード検索が必要なユーザーに適しています。Weaviateはセルフホスティングもしくはマネージドのどちらでも可能で、デプロイメントにおける柔軟性を提供します。
+
+（引用元：https://github.com/openai/chatgpt-retrieval-plugin/tree/main#choosing-a-vector-database ）
+
+ここで触れられているハイブリッド検索が我々の目標です。
+
+### Weaviate Cloud Services（WCS）
+オープンソースのWeaviateは、Dockerなどでローカルに立てることもできますが、SaaSとして**Weaviate Cloud Services**も提供されています。
+
+https://weaviate.io/developers/wcs
+
+本記事ではWeaviate Cloud Servicesの無料版を使用します。
+
+### クライアントライブラリ
+ライブラリは執筆時点で以下の言語をサポートしています。
+
+- Python
+- TypeScript/JavaScript
+  - TypeScriptへの移行が推奨。 
+- Go
+- Java
+
+https://weaviate.io/developers/weaviate/client-libraries
+
+本記事ではTypeScriptライブラリを使用します。
+
+## ハイブリッド検索（Hybrid Search)について
+「ハイブリッド検索」を文字通り取れば、「〇〇検索」と「××検索」の掛け合わせ検索ということになりますが、Weaviateでは「Sparse Vector」（粗なベクトル）と「Dense Vector」（密なベクトル）それぞれを用いた検索の掛け合わせを「ハイブリッド検索」と言っています。
+
+結果として、キーワード検索とセマンティック検索の両方の特性を備えた検索ができます。
+
+### Sparse Vector
+BM25、SPLADEといったアルゴリズムでベクトル化される。Weaviateは**BM25/BM25F**を使っている。[^1]
+単語レベルで類似度（Score）を出す、つまりキーワード検索に適している。
+
+[^1]:BM25については以下の記事が非専門家にはわかりやすかったです。https://dev.classmethod.jp/articles/mrmo-ml-20200422/
+
+### Dense Vector
+GloVe[^2]、Transformersといった機械学習モデルでベクトル化される。（TransformersはGPTのTですね。）
+文脈（コンテクスト）を踏まえたセマンティック検索に適している。
+
+[^2]:Global Vectors for Word Representation
+
+Weaviateは最初からハイブリッド検索をサポートしていたわけではなく、2022年12月のv1.17で導入されました。
+
+https://github.com/weaviate/weaviate/releases/tag/v1.17.0
+
+--- 
+ちなみにPineconeも、セマンティック検索と従来のキーワード検索の掛け合わせる「ハイブリッド検索」を持っています。
+
+https://www.pinecone.io/learn/hybrid-search-intro/
+
+Pineconeでのハイブリッド検索の実装についてはこちら。
+
+https://dev.classmethod.jp/articles/pinecone-overview/#toc-8
+
+https://qiita.com/orc_jj/items/4f631a772372dbb41644
+
+## Weaviate Cloud Services（WCS）のセットアップ
+概念はこのくらいにして、Weaviateをクラウド環境にセットアップします。
+
+セットアップにあたっては、下記の公式ドキュメントも参考にしてください。
+
+https://weaviate.io/developers/weaviate/quickstart
+
+### アカウント作成
+セットアップは簡単で、[こちら](https://weaviate.io/)にアクセスし、「Start Free」を押下。
+![image.png](https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/2722903/4043110c-c937-4b07-e07e-0489548a1dfe.png)
+
+Weaviate Consoleで*Don't have an account? Register here*を選択し、アカウントを登録。
+![image.png](https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/2722903/54dfc5ee-58cf-baae-d9ab-c97fb852e702.png)
+
+メールが飛びますので、メールのリンクを踏んでいき、Verificationを済ませればアカウント登録完了です。
+![image.png](https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/2722903/9823ed53-0eaa-1cc8-a70f-6eeef469b970.png)
+
+### データベース（Cluster）作成
+*Create cluster*を選択。
+![image.png](https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/2722903/02142536-c51d-f0f6-680f-b0a80766baf3.png)
+
+Free sandboxにして、*Create*を押下して、作成完了です。作成完了まで30秒ほどがかかります。
+![image.png](https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/2722903/9092e98f-284d-1e6d-dbe0-b61c4900353b.png)
+
+### 認証情報を取得する
+Detailsを開きます。
+![image.png](https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/2722903/8cd2fdf6-dcf3-341c-e6ca-37c31ab59524.png)
+
+- Cluster URLを取得
+  - https://your-cluster-name.weaviate.network の形式 
+- *Authentication*の欄が展開されるので、右の鍵マークからAPIキーを取得
+![image.png](https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/2722903/cc6fd82b-29bd-8d59-4d47-e6408239117f.png)
+
+これでセットアップ完了です。
+
+## 実装
+Officialの[typescript-client](https://github.com/weaviate/typescript-client)を使って、データ取り込みからハイブリッド検索まで、[Quickstart Tutorial](https://weaviate.io/developers/weaviate/quickstart)に従って実装していきます。
+
+作曲家と曲名情報を持つJSON配列を取り込み、ハイブリッド検索を行うことを目標とします。
+
+### サンプルデータ
+今回用いるサンプルデータの型定義はこちら。
+
+```ts:サンプルデータの型定義
+interface Music {
+  "piece_id": string,
+  "composer": string,
+  "pieceName": string,
+}
+```
+
+**JSONオブジェクトの例**
+```json
+{
+  "piece_id": 206,
+  "composer": "ブラームス",
+  "pieceName": "ピアノ協奏曲　第1番",
+}
+```
+
+以上の形式で、ショパンとブラームスの曲を250曲分を扱ってみます。
+
+:::note
+最終的には下記のようなディレクトリになります。
+
+📦weaviate_hybrid_search
+ ┣ 📂node_modules
+ ┣ 📜config.ts
+ ┣ 📜createClass.ts
+ ┣ 📜formatJSON.ts
+ ┣ 📜formatted_data.json
+ ┣ 📜hybridSearch.ts
+ ┣ 📜importData.ts
+ ┣ 📜package-lock.json
+ ┣ 📜package.json
+ ┗ 📜sample.json
+
+:::
+
+### 0. プロジェクトの作成
+はじめにNode.jsプロジェクトを作成します。
+
+```sh
+mkdir weaviate_hybrid_search
+cd weaviate_hybrid_search
+npm init -y
+```
+
+続いてTypeScriptとクライアントライブラリ、コード実行用のts-nodeを導入します。
+
+```sh
+npm install --save-dev typescript ts-node
+npm install weaviate-ts-client
+```
+バージョン確認のため、`package.json`を掲載します。
+
+```json:package.json
+{
+  "name": "weaviate_hybrid_search",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "weaviate-ts-client": "^1.4.0"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.1",
+    "typescript": "^5.1.6"
+  }
+}
+```
+
+### 1. Weaviateの接続情報をセットアップ
+まず、`config.ts`をプロジェクトルートに作成し、Weaviateの接続情報を記載します。
+
+なお、データ取り込みの際の**Vevtorizer**でOpenAI Embedding APIを用いるため、**OpenAI-Api-Key**が必要です。（取得方法について本記事では触れません。）
+
+```ts:config.ts
+import { ApiKey } from 'weaviate-ts-client';
+
+const weaviateClientArg = {
+  scheme: 'https',
+  host: '<ClusterName>.weaviate.network',  // 前項で取得したCluster URL
+  apiKey: new ApiKey('XXXXXXXXXXXXXXXXXXXX'),  // 前項で取得したWeaviateのAPI KEY
+  headers: { 'X-OpenAI-Api-Key': 'sk-XXXXXXXXXXXXXXXXXXX' },  // OpenAIのAPI KEY
+}
+
+export { weaviateClientArg }
+```
+
+### 2. SchemaからClassを作成する
+続いて、**Class**を作成していきます。`createClass.ts`を下記のように追加します。
+
+```ts:createClass.ts
+import weaviate, { WeaviateClient } from "weaviate-ts-client";
+import { weaviateClientArg } from "./config";
+
+async function createClass() {
+  const client: WeaviateClient = weaviate.client(weaviateClientArg);
+
+  const classObj = {
+    "class": "Music",
+    "vectorizer": "text2vec-openai",
+    "description": "Information about classical piano music.",
+    "properties": [
+      {
+        "dataType": ["text"],
+        "name": "composer",
+        "description": "The composer",
+        "moduleConfig": {
+          "text2vec-openai": {
+            "model": "ada",
+            "modelVersion": "002",
+            "type": "text",
+            "skip": false
+          }
+        },
+      },
+      {
+        "dataType": ["text"],
+        "name": "pieceName",
+        "description": "The name of piece",
+        "moduleConfig": {
+          "text2vec-openai": {
+            "model": "ada",
+            "modelVersion": "002",
+            "type": "text",
+            "skip": false
+          }
+        },
+      },
+      {
+        "dataType": ["int"],
+        "name": "piece_id",
+        "description": "The id of the piece",
+        "moduleConfig": {
+          "text2vec-openai": {
+            "model": "ada",
+            "modelVersion": "002",
+            "type": "text",
+            "skip": true
+          }
+        },
+      }
+    ]
+  }
+
+  const res = await client.schema.classCreator().withClass(classObj).do();
+  console.log(res);
+}
+
+createClass()
+```
+
+特定のプロパティをベクトル化の対象外にしたい場合は、`moduleConfig`内で`skip`をtrueにします。
+
+`dataType`の一覧は下記にあります。
+
+https://weaviate.io/developers/weaviate/config-refs/datatypes
+
+ts-nodeで実行します。
+```sh
+ts-node createClass.ts
+```
+
+:::note
+Classを作成し直したい場合などのため、削除用の関数も貼っておきます。
+Class名を指定して、ts-nodeで実行してください。
+
+<details>
+<summary>Classの削除</summary>
+
+```ts:deleteClass
+import weaviate, { WeaviateClient } from 'weaviate-ts-client';
+import { weaviateClientArg } from './config';
+
+/**
+ * Classの削除
+ * @param className
+ */
+async function deleteClass(className: string) {
+  const client: WeaviateClient = weaviate.client(weaviateClientArg);
+
+  client.schema
+    .classDeleter()
+    .withClassName(className)
+    .do()
+    .then((res: any) => {
+      console.log(res);
+    })
+    .catch((err: Error) => {
+      console.error(err)
+    });
+}
+
+deleteClass("Music")
+```
+
+</details>
+
+:::
+
+### 3. JSONデータの用意
+#### JSONデータにuuidを追加する
+Weaviateは取り込み時にuuidを振ってくれますが、今回はuuid付きのJSONデータを事前に用意します。
+
+```sh
+npm install uuid
+npm i --save-dev @types/uuid
+```
+
+データは`sample.json`の名前でプロジェクトルートに置きます。
+
+```ts:formatJSON.ts
+// 取り込むJSONの形式にしてください。
+interface Music {
+  "piece_id": string,
+  "composer": string,
+  "pieceName": string,
+}
+
+import { v5 as uuidv5 } from 'uuid';
+import fs from 'fs';
+import path from 'path';
+
+const NAMESPACE = 'fccc1a21-0397-4ecb-abfe-de06761b3616'; // 任意のuuid４を指定
+
+function addUUID(data: Array<Music>): Array<Music & { uuid: string }> {
+  return data.map(item => ({
+    ...item,
+    uuid: uuidv5(`${item.composer}${item.pieceName}`, NAMESPACE)
+  }));
+}
+
+async function formatData() {
+  const rawData = await fs.promises.readFile(path.join(__dirname, './sample.json'), 'utf-8');
+  const data = JSON.parse(rawData);
+
+  const formattedData = addUUID(data);
+
+  await fs.promises.writeFile(path.join(__dirname, './formatted_data.json'), JSON.stringify(formattedData, null, 2));
+
+  console.log('Data has been formatted and written to ./formatted_data.json');
+}
+
+formatData()
+```
+
+コードを実行します。
+
+```sh
+ts-node formatJSON.ts
+```
+
+これでuuid付きの取り込みデータが完成です。
+
+```json:formatted_data.json
+[
+  {
+    "piece_id": 206,
+    "composer": "ブラームス",
+    "pieceName": "ピアノ協奏曲　第1番",
+    "uuid": "bce5c1ce-6e20-5226-a130-a9b991d62107"
+  },
+  {
+    "piece_id": 207,
+    "composer": "ブラームス",
+    "pieceName": "ピアノ協奏曲　第2番",
+    "uuid": "03f397b3-ce6b-5772-a177-2e2a8016c0c9"
+  },...
+]
+```
+
+:::note
+`NAMESPACE`は下記のツールなどで作成した任意のuuid（v4）で置き換えてください。
+https://www.uuidgenerator.net/version4
+:::
+
+### 4. データを取り込む
+前項で作成した`formatted_data.json`を`Music`クラスに取り込みます。
+下記の`importData.ts`を新たにプロジェクトルートに追加します。
+
+```ts:importtData
+import weaviate, { WeaviateClient, ObjectsBatcher, WeaviateObject } from 'weaviate-ts-client';
+import { weaviateClientArg } from './config';
+import fs from 'fs';
+
+async function importData() {
+  const className = "Music" // 作成したClass名に置き換えてください。
+  const client: WeaviateClient = weaviate.client(weaviateClientArg);
+
+  const musicJSON = JSON.parse(await fs.promises.readFile('formatted_data.json', 'utf8'))
+
+  let batcher: ObjectsBatcher = client.batch.objectsBatcher();
+  let counter = 0;
+  let batchSize = 100;
+
+  for (const item of musicJSON) {
+    const obj: WeaviateObject = {
+      class: className,
+      id: item.uuid,
+      properties: {
+        piece_id: item.piece_id, // Classのオブジェクトのプロパティに置き変えてください。
+        composer: item.composer,
+        pieceName: item.pieceName,
+      },
+    }
+
+    batcher = batcher.withObject(obj);
+
+    if (counter++ == batchSize) {
+      const res = await batcher.do();
+      console.log(res);
+
+      counter = 0;
+      batcher = client.batch.objectsBatcher();
+    }
+  }
+
+  const res = await batcher.do();
+  console.log(res);
+}
+
+importData()
+```
+(参考：https://weaviate.io/developers/weaviate/quickstart#add-objects)
+
+```sh
+ts-node importData.ts
+```
+
+レスポンスは以下のようなJSONの配列になっており、`result.status`が`SUCCESS`となっていれば、取り込み成功です。
+
+<details>
+<summary>レスポンス（1項目分を抜粋）</summary>
+
+```sh
+ {
+    class: 'Music',
+    creationTimeUnix: 1689176786417,
+    id: 'fecb6795-b1d5-5303-9fb6-6740f30fb0e0',
+    lastUpdateTimeUnix: 1689176786417,
+    properties: {
+      composer: 'ブラームス',
+      pieceName: 'ロベルト・シューマンの五重奏よりスケルツォ',
+      piece_id: 83446
+    },
+    vector: [
+          -0.01618669,  -0.009350241,    -0.02352856,    -0.03952904,
+       -0.00037532306,   0.040167466,   -0.018062059,   -0.010101719,
+         -0.015840879, -0.0047582486,   -0.014431027,  -0.0021014768,
+         -0.032133974,  0.0004933649,   -0.011770929,    0.006277829,
+         0.0049477806,  0.0019202576,    0.030591115,   -0.016918218,
+      -0.000040291117,  -0.012515756,  -0.0019684718,    0.010540634,
+         -0.016785212,  0.0024988286,    0.017796049,   -0.029553678,
+          0.009097532, -0.0026268458,      0.0493448,  -0.0026750602,
+         -0.017210828,  0.0018753684,   -0.005296918,   -0.042614754,
+         -0.015947282,  -0.011770929,   -0.014298022,  -0.0033134834,
+         -0.013047776,   -0.00397352,    0.014869942,   0.0067499964,
+         -0.027851216,  0.0035213034,   -0.005722534,  -0.0040200716,
+          0.009303689,   0.010095068,    0.021533486,    0.017942354,
+         -0.041976333,   0.005675982,    0.019272404, -0.00014786399,
+          0.011850732,  0.0019235826, -0.00040836647,  -0.0101083685,
+           0.00878497,   0.009090882,   -0.025310824,  0.00040109275,
+         -0.011997038,  -0.011644575,    -0.02275713,   0.0068963016,
+         -0.017702946, -0.0083992565,  -0.0009052643,     0.03697535,
+         -0.017796049,  0.0137394015,    0.024512794,   -0.010906398,
+          -0.02848964,  -0.015654672,    0.016732011,    0.006078322,
+          0.020549249,  -0.012848269,  -0.0011854058,  0.00021800326,
+          0.018487675,  -0.007760833,   -0.012302949,   0.0057391594,
+           -0.0191793,   -0.02880885,   0.0024456268,   -0.007780784,
+        -0.0016118526,  0.0006026782,  -0.0048380517,     0.01123891,
+          0.006191376,   0.019418709,   -0.028862054,   -0.025443828,
+      ... 1436 more items
+    ],
+    deprecations: null,
+    result: { status: 'SUCCESS' }
+  }
+```
+</details>
+
+### 5. ハイブリッド検索を行う
+データが取り込めたので、いよいよ検索してみます。
+TypeScriptのクライアントライブラリでは、`withHybrid`を用いることでハイブリッド検索ができます。
+
+パラメータの`alpha`は0から1までの値を取り、**0に近いほどキーワード検索、1に近いほどベクトル検索（意味検索）** になります。
+
+https://weaviate.io/developers/weaviate/search/hybrid
+
+```ts:hybridSearch.ts
+import weaviate, { WeaviateClient } from 'weaviate-ts-client';
+import { weaviateClientArg } from './config';
+
+async function hybridSearch({ query, alpha }: { query: string, alpha: number }) {
+  const client: WeaviateClient = weaviate.client(weaviateClientArg);
+  const className = "Music"
+
+  const res = await client.graphql
+    .get()
+    .withClassName(className)
+    .withFields('piece_id composer pieceName _additional { score explainScore }')
+    .withHybrid({
+      query,
+      alpha
+    })
+    .withLimit(5)
+    .do()
+
+  console.log(JSON.stringify(res, null, 2));
+  return res
+}
+
+const queryArg = {
+  query: '＜質問内容＞',
+  alpha: 0.75 // 重みづけ
+}
+
+hybridSearch(queryArg);
+```
+
+たとえば、作曲家の間違った`ブラームス 幻想即興曲`というクエリで検証してみました。
+
+この時、以下のような結果となりました。
+
+<table>
+<tr>
+<th>Alpha = 0.1 (キーワード重視)</th>
+<th>Alpha = 0.9 (ベクトル近似重視)</th>
+</tr>
+<tr>
+<td>
+
+| Composer | Piece Name |
+|----------|------------|
+| ショパン | 幻想即興曲 (遺作) |
+| ショパン＝グールド&シェフター | 幻想即興曲(2台ピアノ） |
+| ブラームス | スケルツォ |
+
+</td>
+<td>
+
+| Composer | Piece Name |
+|----------|------------|
+| ブラームス | 7つの幻想曲集 |
+| ブラームス | 創作主題による変奏曲 |
+| ブラームス | シューマンの主題による変奏曲 |
+
+</td>
+</tr>
+</table>
+
+キーワード検索に比重を置くと、よりレアなキーワードである「幻想即興曲」の一致が優先されショパンの楽曲がヒットしました。
+
+一方でalpha値をベクトル検索に寄せてみると、より全体の一致が優先され、ブラームスの「7つの幻想曲集」がヒットする結果となりました。
+
+今回は作曲家、曲名という短い項目のみをデータとしましたが、文章検索の場合は、重みづけの差がより顕著に出るものと思われます。
+
+## おわりに
+以上、Weaviateの導入から、TypeScriptでのデータ取り込み、ハイブリッド検索までを扱いました。
+
+Weaviateは、その特徴であるモジュール、**Vectorizer**によって、JSONデータを事前のベクトル化なしに取り込めるのが、とっつきやすく魅力的です。
+
+ハイブリッド検索に関しても、Sparse/Dense、二つのEmbeddingを作る必要なく、メソッドとパラメータを変えるだけでよく、ハイブリッド検索をお手軽に試してみるには、うってつけのベクトルデータベースです。
+
+Weaviate、ぜひ触ってみてください。
