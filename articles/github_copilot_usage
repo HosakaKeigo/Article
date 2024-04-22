@@ -1,0 +1,322 @@
+# はじめに
+**GitHub Copilot**を導入して、筆者の開発効率は間違いなく上がりました。テストコードを書くときは特にお世話になっています。
+
+体感では開発効率は間違いなく上がったのですが、実際どのくらい助けられているか定量的に計測できず、効果測定に困っていました。
+
+APIが無いか、定期的に探していたのですが、ついにエンドポイントを見つけたので試してみました。
+
+# 結論
+アルファ版のAPIではあるが、`/orgs/{org}/copilot/usage`で組織のCopilot利用状況が取得できる。
+
+https://docs.github.com/en/early-access/copilot/copilot-usage-api
+
+下記のように日別に**何行提案され、何行採用されたか**が、言語、エディタごとに取得可能。
+```json
+{
+    "day": "2023-10-15",
+    "total_suggestions_count": 1000,
+    "total_acceptances_count": 800,
+    "total_lines_suggested": 1800,
+    "total_lines_accepted": 1200,
+    "total_active_users": 8,
+    "breakdown": [
+      {
+        "language": "python",
+        "editor": "vscode",
+        "suggestions_count": 300,
+        "acceptances_count": 250,
+        "lines_suggested": 900,
+        "lines_accepted": 700,
+        "active_users": 5
+      },
+      {
+        "language": "python",
+        "editor": "jetbrains",
+        "suggestions_count": 300,
+        "acceptances_count": 200,
+        "lines_suggested": 400,
+        "lines_accepted": 300,
+        "active_users": 2
+      },
+      {
+        "language": "ruby",
+        "editor": "vscode",
+        "suggestions_count": 400,
+        "acceptances_count": 350,
+        "lines_suggested": 500,
+        "lines_accepted": 200,
+        "active_users": 4
+      }
+    ]
+}
+```
+
+筆者の直近1ヶ月の採用率acceptance_rateは**21.5%**でした。（1234/5751）
+
+# 🌳環境
+- MacBook Air (M1, 2020)
+- デフォルトのターミナル
+- 2024年3月15日に検証 
+
+# GitHub CLI導入
+「結論」で出オチです。あとはGitHubのAPIを叩くのみ。
+
+本記事ではGitHub CLIを使いました。GitHub Access Tokenを用意すればNode.jsでもPostmanでも良いと思います。
+
+## インストール
+homebrewを使用。
+
+```sh
+$brew install gh
+```
+https://github.com/cli/cli#installation
+
+## ログイン
+```sh
+$gh auth login
+```
+
+CLIの指示に従ってログインします。このとき、ログインアカウントは組織のownerまたはbilling managerである必要があります。
+
+
+>You must be an owner or billing manager of an organization with a Copilot Business subscription, or an owner or billing manager of its parent enterprise, to view Copilot usage metrics.
+>https://docs.github.com/en/early-access/copilot/copilot-usage-api
+
+CLIの指示に従ってログインします。ブラウザでログインする方法を選択しました。
+![image.png](https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/2722903/2ed9a62d-038a-553e-f047-ee16bc43a62b.png)
+
+![image.png](https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/2722903/fda6b975-fab2-a90c-2812-bde7eedc7073.png)
+
+CLIにワンタイムパスワードが表示されるので入力します。
+![image.png](https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/2722903/99d31605-deb4-2c89-c9cd-00181ba75cda.png)
+
+![image.png](https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/2722903/3460f65d-0af7-8503-b1ad-68a512cc2357.png)
+
+
+# APIを呼ぶ
+GitHub CLIだと認証された状態でGitHub APIを呼ぶことができます。
+
+https://cli.github.com/manual/gh_api
+
+覚えたての`/orgs/{org}/copilot/usage`を呼んでみます。
+`{org}`には取得する組織名を入れます。
+```sh
+$gh api /orgs/{org}/copilot/usage
+```
+https://docs.github.com/en/early-access/copilot/copilot-usage-api
+
+
+```
+gh: This API operation needs the "admin:enterprise" scope. To request it, run:  gh auth refresh -h github.com -s admin:enterprise
+```
+
+scope不足でダメでした。
+
+気を取り直して指示通り、
+
+```
+$gh auth refresh -h github.com -s admin:enterprise
+```
+
+を実行して、再度`gh api`で成功しました。[^1]
+
+[^1]: 成功してしまったので筆者の環境での検証はできませんでしたが、ログインアカウントにorgの権限が足りない場合などは失敗するかもしれません。
+
+# レスポンス
+1ヶ月程度の使用データが取得できました。
+アルファ版なので精度が不安ですが、`total_active_users`は正しく、言語・エディタも正確に見えます。
+
+2/20は筆者は有給を取ったので少なくなっています。
+
+```json
+[
+  {
+    "day": "2024-02-19",
+    "total_suggestions_count": 511,
+    "total_acceptances_count": 81,
+    "total_lines_suggested": 762,
+    "total_lines_accepted": 107,
+    "total_active_users": 2,
+    "breakdown": [
+      {
+        "language": "javascript",
+        "editor": "vscode",
+        "suggestions_count": 307,
+        "acceptances_count": 49,
+        "lines_suggested": 466,
+        "lines_accepted": 67,
+        "active_users": 2
+      },
+      {
+        "language": "ruby",
+        "editor": "vscode",
+        "suggestions_count": 64,
+        "acceptances_count": 9,
+        "lines_suggested": 91,
+        "lines_accepted": 9,
+        "active_users": 2
+      },
+      {
+        "language": "typescript",
+        "editor": "vscode",
+        "suggestions_count": 72,
+        "acceptances_count": 9,
+        "lines_suggested": 100,
+        "lines_accepted": 11,
+        "active_users": 2
+      },
+      {
+        "language": "vue",
+        "editor": "vscode",
+        "suggestions_count": 64,
+        "acceptances_count": 14,
+        "lines_suggested": 96,
+        "lines_accepted": 20,
+        "active_users": 2
+      },
+      {
+        "language": "html+erb",
+        "editor": "vscode",
+        "suggestions_count": 4,
+        "acceptances_count": 0,
+        "lines_suggested": 9,
+        "lines_accepted": 0,
+        "active_users": 1
+      }
+    ]
+  },
+  {
+    "day": "2024-02-20",
+    "total_suggestions_count": 6,
+    "total_acceptances_count": 3,
+    "total_lines_suggested": 7,
+    "total_lines_accepted": 3,
+    "total_active_users": 2,
+    "breakdown": [
+      {
+        "language": "ruby",
+        "editor": "vscode",
+        "suggestions_count": 5,
+        "acceptances_count": 2,
+        "lines_suggested": 6,
+        "lines_accepted": 2,
+        "active_users": 2
+      },
+      {
+        "language": "html+erb",
+        "editor": "vscode",
+        "suggestions_count": 1,
+        "acceptances_count": 1,
+        "lines_suggested": 1,
+        "lines_accepted": 1,
+        "active_users": 2
+      }
+    ]
+  },
+  [...]
+  {
+    "day": "2024-03-14",
+    "total_suggestions_count": 95,
+    "total_acceptances_count": 33,
+    "total_lines_suggested": 118,
+    "total_lines_accepted": 43,
+    "total_active_users": 2,
+    "breakdown": [
+      {
+        "language": "properties",
+        "editor": "vscode",
+        "suggestions_count": 1,
+        "acceptances_count": 0,
+        "lines_suggested": 1,
+        "lines_accepted": 0,
+        "active_users": 1
+      },
+      {
+        "language": "ssh_config",
+        "editor": "vscode",
+        "suggestions_count": 1,
+        "acceptances_count": 0,
+        "lines_suggested": 1,
+        "lines_accepted": 0,
+        "active_users": 1
+      },
+      {
+        "language": "javascript",
+        "editor": "vscode",
+        "suggestions_count": 54,
+        "acceptances_count": 24,
+        "lines_suggested": 66,
+        "lines_accepted": 28,
+        "active_users": 2
+      },
+      {
+        "language": "typescript",
+        "editor": "vscode",
+        "suggestions_count": 22,
+        "acceptances_count": 5,
+        "lines_suggested": 25,
+        "lines_accepted": 5,
+        "active_users": 2
+      },
+      {
+        "language": "vue",
+        "editor": "vscode",
+        "suggestions_count": 17,
+        "acceptances_count": 4,
+        "lines_suggested": 25,
+        "lines_accepted": 10,
+        "active_users": 2
+      }
+    ]
+  }
+]
+```
+
+`acceptances_count`と`suggestions_count`を計算すると
+
+```
+1234/5751
+0.21457137889062772
+```
+
+つまり、**21.5%** 程度の採用率（Acceptance Rate）であることがわかりました。
+行数で見ると**23.6%** 程度。
+
+たぶんモニター的な感じだと思いますが、いくつかの企業がGitHubからデータをもらって検証記事を出していますが、どこも3割くらいでした。
+
+- KAG（KDDIアジャイル開発センター）さん
+https://developers.kddi.com/blog/70lix5UbfLU0k0AnJq5JzY
+
+- SANSANさん[^2]
+https://buildersbox.corp-sansan.com/entry/2023/09/01/110000
+
+- GMOペパボさん
+https://tech.pepabo.com/2023/08/30/github-copilot-effects/
+
+- サイバーエージェントさん
+https://developers.cyberagent.co.jp/blog/archives/43059/
+
+[^2]:no pun intended
+
+JavaScriptが比較的多い日もありました。何をした日かと振り返ってみたところ、むべなるかな、jestを書きながらリファクタリングをしまくっていた日でした。
+```json
+      {
+        "language": "javascript",
+        "editor": "vscode",
+        "suggestions_count": 845,
+        "acceptances_count": 205,
+        "lines_suggested": 1681,
+        "lines_accepted": 416,
+        "active_users": 2
+      },
+```
+
+# おわりに
+発見した`/orgs/{org}/copilot/usage`エンドポイントを使って、GitHub Copilotの利用統計を取得してみました。
+
+数字の正確度はきっちり検証していませんが、少なくとも筆者の環境では大きく外れてはいないように思いました。
+
+公式でダッシュボードが提供されると一番嬉しいのですが、ひとまずGitHub Copilotの定量的な効果検証をする方法の選択肢にはなりうるのではないかと思います。
+
+## 参考
+https://github.com/orgs/community/discussions/54691
